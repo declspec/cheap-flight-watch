@@ -1,0 +1,1 @@
+trips(data(airport,carrier),tripOption(id,saleTotal,slice(duration,segment(cabin,connectionDuration,duration,flight/carrier,id,leg(aircraft,arrivalTime,changePlane,connectionDuration,departureTime,destination,duration,id,mileage,origin),subjectToGovernmentApproval))))

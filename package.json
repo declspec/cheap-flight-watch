@@ -1,0 +1,15 @@
+{
+  "name": "cheap-flight-watch",
+  "version": "0.0.1",
+  "description": "Lookout for cheap flights",
+  "main": "index.js",
+  "repository": {
+    "url": "https://github.com/declspec/cheap-flight-watch.git",
+    "type": "git"
+  },
+  "author": "Jason Larke",
+  "license": "MIT",
+  "dependencies": {
+    "moment": "^2.17.1"
+  }
+}
