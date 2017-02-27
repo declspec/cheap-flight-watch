@@ -1,8 +1,7 @@
-let fs = require('fs'),
+let Q = require('q'),
+    fs = require('fs'),
     moment = require('moment'),
     filter = require('./lib/trip-filter');
-
-const qpxData = JSON.parse(fs.readFileSync('results.json', 'utf8'));
 
 const codeReduction = (acc, item) => {
     acc[item.code] = item;
@@ -13,106 +12,105 @@ const minutesToReadable = (mins) => {
     let hours = Math.floor(mins / 60),
         suffix = hours !== 1 ? 's' : '';
     mins = mins % 60;
-    return `${hours} hour${suffix} & ${mins} minutes`;
+    return `${hours} hour${suffix} ${mins} minutes`;
 };
 
-const eventToReadable = (event, airportLookup) => {
+const eventToReadable = (event) => {
     switch(event.type) {
     case 'connection':
-        const location = airportLookup[event.location];
-        return `[ ${minutesToReadable(event.duration)} stop at ${location.name} ]`;
+        return `[ ${minutesToReadable(event.duration)} stop at ${event.location.name} ]`;
     case 'flight':
-        const origin = airportLookup[event.origin];
-        const dest = airportLookup[event.destination];
-
-        return `${origin.name} (${origin.code}) -> ${dest.name} (${dest.code}) : ${minutesToReadable(event.duration)}`;
+        return `${event.origin.name} (${event.origin.code}) -> ${event.destination.name} (${event.destination.code}) : ${minutesToReadable(event.duration)}`
+            + (event.number ? ` [${event.number}]` : '');
     default:
         throw new TypeError('Invalid event type provided');
     }
 };
 
-const optionToReadable = (option, airportLookup, carrierLookup) => {
+const optionToReadable = (option) => {
+    const dateFormat = 'DD/MM/YYYY HH:mm (Z)';
     const flights = option.events.filter(e => e.type === 'flight');
-    const carrierNames = option.carriers.map(c => carrierLookup[c].name);
+    const carrierNames = option.carriers.map(c => c.name);
 
-    return `$${option.price} (${option.currency}) | ${flights.length} flights | ${minutesToReadable(option.duration)} | ${carrierNames.join(', ')}`
-        + `\n    ${option.events.map(e => eventToReadable(e, airportLookup)).join("\n    ")}\n`;
+    return `$${option.price} (${option.currency}) | ${flights.length} flights | ${minutesToReadable(option.duration)} | ${carrierNames.join(', ')} | ${flights[0].departure.format(dateFormat)} -> ${flights[flights.length-1].arrival.format(dateFormat)}`
+        + `\n    ${option.events.map(eventToReadable).join("\n    ")}\n`;
 };
 
-const getFirstSegment = (tripOption) => {
-    const slice = tripOption.slice[0];
-    return slice && slice.segment[0];
-};
+const mapTrips = (qpxData) => {
+    const airportMap = qpxData.trips.data.airport.reduce(codeReduction, {});
+    const carrierMap = qpxData.trips.data.carrier.reduce(codeReduction, {});
 
-const getLastSegment = (tripOption) => {
-    const slice = tripOption.slice[tripOption.slice.length - 1];
-    return slice && slice.segment[slice.segment.length - 1];
-};
+    return qpxData.trips.tripOption.map(opt => {
+        let slice = opt.slice[0],
+            events = [],
+            carriers = [];
 
-const getFirstLeg = (tripOption) => {
-    const segment = getFirstSegment(tripOption);
-    return segment && segment.leg[0];
-};
+        slice.segment.forEach(segment => {
+            if (carriers.indexOf(segment.flight.carrier) < 0)
+                carriers.push(segment.flight.carrier);
 
-const getLastLeg = (tripOption) => {
-    const segment = getLastSegment(tripOption);
-    return segment && segment.leg[segment.leg.length - 1];
-};
+            segment.leg.forEach(leg => {
+                events.push({ 
+                    type: 'flight', 
+                    departure: moment.parseZone(leg.departureTime),
+                    arrival: moment.parseZone(leg.arrivalTime),
+                    origin: airportMap[leg.origin],
+                    destination: airportMap[leg.destination],
+                    duration: leg.duration,
+                    number: segment.flight.number 
+                        ? `${segment.flight.carrier}-${segment.flight.number}` 
+                        : null
+                });
 
-const options = qpxData.trips.tripOption.map(opt => {
-    let slice = opt.slice[0],
-        events = [],
-        carriers = [];
-
-    slice.segment.forEach(segment => {
-        if (carriers.indexOf(segment.flight.carrier) < 0)
-            carriers.push(segment.flight.carrier);
-
-        segment.leg.forEach(leg => {
-            events.push({ 
-                type: 'flight', 
-                departure: moment.parseZone(leg.departureTime),
-                arrival: moment.parseZone(leg.arrivalTime),
-                origin: leg.origin,
-                destination: leg.destination,
-                duration: leg.duration
+                if (leg.hasOwnProperty('connectionDuration')) {
+                    events.push({ 
+                        type: 'connection', 
+                        duration: leg.connectionDuration, 
+                        location: airportMap[leg.destination]
+                    });
+                }
             });
 
-            if (leg.hasOwnProperty('connectionDuration')) {
+            if (segment.hasOwnProperty('connectionDuration')) {
                 events.push({ 
                     type: 'connection', 
-                    duration: leg.connectionDuration, 
-                    location: leg.destination 
+                    duration: segment.connectionDuration, 
+                    location: airportMap[segment.leg[segment.leg.length - 1].destination]
                 });
             }
         });
 
-        if (segment.hasOwnProperty('connectionDuration')) {
-            events.push({ 
-                type: 'connection', 
-                duration: segment.connectionDuration, 
-                location: segment.leg[segment.leg.length - 1].destination 
-            });
-        }
+        const priceMatch = /[0-9]/.exec(opt.saleTotal);
+
+        return {
+            id: opt.id,
+            price: parseFloat(opt.saleTotal.substring(priceMatch.index)),
+            currency: opt.saleTotal.substring(0, priceMatch.index),
+            duration: slice.duration,
+            carriers: carriers.map(code => carrierMap[code]),
+            events: events
+        };
     });
+};
 
-    const priceMatch = /[0-9]/.exec(opt.saleTotal);
+// --
+// Main
+// --
 
-    return {
-        id: opt.id,
-        price: parseFloat(opt.saleTotal.substring(priceMatch.index)),
-        currency: opt.saleTotal.substring(0, priceMatch.index),
-        duration: slice.duration,
-        carriers: carriers,
-        events: events
-    };
-});
+const qpx = require('./lib/qpx')('AIzaSyAaPygu-icX_Fr_qHueEF1d0oCWt_DGqkw');
+const departure = new Date(2017, 5, 28);
 
-filter(options).then(options => {
-    const airports = qpxData.trips.data.airport.reduce(codeReduction, {});
-    const carriers = qpxData.trips.data.carrier.reduce(codeReduction, {});
+const promise = Q.all([ 
+    qpx.search('BCN', 'AMS', departure).then(mapTrips),
+    //qpx.search('SPU', 'ATH', departure).then(mapTrips)
+]);
 
-    options.forEach(opt => {
-        console.log(optionToReadable(opt, airports, carriers));
-    });
-});
+promise.then(searches => Array.prototype.concat.apply([], searches))
+    .then(filter)
+    .then(options => {
+        options.sort((a,b) => a.price - b.price);
+
+        options.forEach(opt => {
+            console.log(optionToReadable(opt));
+        });
+    }, console.error);

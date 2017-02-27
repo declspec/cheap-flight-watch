@@ -1,5 +1,4 @@
-trips(data(airport,carrier),tripOption(id,saleTotal,slice(duration,segment(cabin,connectionDuration,duration,flight/carrier,id,leg(aircraft,arrivalTime,changePlane,connectionDuration,departureTime,destination,duration,id,mileage,origin),subjectToGovernmentApproval))))
-trips(data(airport(code,name),carrier(code,name)),tripOption(id,saleTotal,slice(duration,segment(connectionDuration,duration,flight/carrier,id,leg(arrivalTime,changePlane,connectionDuration,departureTime,destination,duration,id,origin)))))
+trips(data(airport(code,name),carrier(code,name)),tripOption(id,saleTotal,slice(duration,segment(connectionDuration,duration,flight,id,leg(arrivalTime,changePlane,connectionDuration,departureTime,destination,duration,id,origin)))))
 
 {
   "request": 
