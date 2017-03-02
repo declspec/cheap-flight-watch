@@ -1,21 +1,72 @@
-let Q = require('q'),
-    fs = require('fs'),
-    moment = require('moment'),
-    filter = require('./lib/trip-filter');
+'use strict';
 
-const codeReduction = (acc, item) => {
-    acc[item.code] = item;
-    return acc;
-};
+const minimist = require('minimist');
+const moment = require('moment');
+const search = require('./lib/search');
 
-const minutesToReadable = (mins) => {
+const args = minimist(process.argv.slice(2), {
+    default: { date: null, maxPrice: null, maxDuration: null },
+    alias: { 'max-price': 'maxPrice', 'max-duration': 'maxDuration' },
+    stopEarly: true
+});
+
+const maxPrice = args.maxPrice !== null ? parseFloat(args.maxPrice) : null;
+const maxDuration = args.maxDuration !== null ? parseInt(args.maxDuration, 10) : null;
+const defaultDate = args.date ? moment(args.date) : null;
+const filters = [];
+
+if (args._.length === 0 || !args._.every(a => a.indexOf(':') >= 0))
+    exit('must specify at least one trip in ORIGIN:DESTINATION[:DATE] format');
+
+if (defaultDate !== null && !defaultDate.isValid())
+    exit('--date is not given in a valid date format')
+
+if (maxDuration !== null) {
+    if (isNaN(maxDuration) || maxDuration <= 0)
+        exit('--max-duration must be a valid positive integer');
+    filters.push((options) => options.filter(opt => opt.duration <= maxDuration));
+}
+
+if (maxPrice !== null) {
+    if (isNaN(maxPrice) || maxPrice <= 0)
+        exit('--max-price must be a valid positive number');
+    filters.push((options) => options.filter(opt => opt.price < maxPrice));
+}
+
+const journeys = args._.map(raw => {
+    const parts = raw.split(':');
+    const date = parts.length >= 3 ? moment(parts[2]) : defaultDate;
+
+    if (!date || !date.isValid())
+        exit(`invalid date found in journey "${raw}", you may specify a default date with --date`);
+
+    return { 
+        origin: parts[0].toUpperCase(), 
+        destination: parts[1].toUpperCase(),
+        date: date.format('YYYY-MM-DD')
+    };
+});
+
+search(journeys, filters).then(options => {
+    options.sort((a,b) => a.price - b.price);
+    options.forEach(opt => console.log(optionToReadable(opt)));
+}).catch(console.error);
+
+
+
+function exit(message, code) {
+    console.error(`error: ${message}`);
+    process.exit(code || 1);
+}
+
+function minutesToReadable(mins) {
     let hours = Math.floor(mins / 60),
         suffix = hours !== 1 ? 's' : '';
     mins = mins % 60;
     return `${hours} hour${suffix} ${mins} minutes`;
 };
 
-const eventToReadable = (event) => {
+function eventToReadable(event) {
     switch(event.type) {
     case 'connection':
         return `[ ${minutesToReadable(event.duration)} stop at ${event.location.name} ]`;
@@ -27,7 +78,7 @@ const eventToReadable = (event) => {
     }
 };
 
-const optionToReadable = (option) => {
+function optionToReadable(option) {
     const dateFormat = 'DD/MM/YYYY HH:mm (Z)';
     const flights = option.events.filter(e => e.type === 'flight');
     const carrierNames = option.carriers.map(c => c.name);
@@ -35,82 +86,3 @@ const optionToReadable = (option) => {
     return `$${option.price} (${option.currency}) | ${flights.length} flights | ${minutesToReadable(option.duration)} | ${carrierNames.join(', ')} | ${flights[0].departure.format(dateFormat)} -> ${flights[flights.length-1].arrival.format(dateFormat)}`
         + `\n    ${option.events.map(eventToReadable).join("\n    ")}\n`;
 };
-
-const mapTrips = (qpxData) => {
-    const airportMap = qpxData.trips.data.airport.reduce(codeReduction, {});
-    const carrierMap = qpxData.trips.data.carrier.reduce(codeReduction, {});
-
-    return qpxData.trips.tripOption.map(opt => {
-        let slice = opt.slice[0],
-            events = [],
-            carriers = [];
-
-        slice.segment.forEach(segment => {
-            if (carriers.indexOf(segment.flight.carrier) < 0)
-                carriers.push(segment.flight.carrier);
-
-            segment.leg.forEach(leg => {
-                events.push({ 
-                    type: 'flight', 
-                    departure: moment.parseZone(leg.departureTime),
-                    arrival: moment.parseZone(leg.arrivalTime),
-                    origin: airportMap[leg.origin],
-                    destination: airportMap[leg.destination],
-                    duration: leg.duration,
-                    number: segment.flight.number 
-                        ? `${segment.flight.carrier}-${segment.flight.number}` 
-                        : null
-                });
-
-                if (leg.hasOwnProperty('connectionDuration')) {
-                    events.push({ 
-                        type: 'connection', 
-                        duration: leg.connectionDuration, 
-                        location: airportMap[leg.destination]
-                    });
-                }
-            });
-
-            if (segment.hasOwnProperty('connectionDuration')) {
-                events.push({ 
-                    type: 'connection', 
-                    duration: segment.connectionDuration, 
-                    location: airportMap[segment.leg[segment.leg.length - 1].destination]
-                });
-            }
-        });
-
-        const priceMatch = /[0-9]/.exec(opt.saleTotal);
-
-        return {
-            id: opt.id,
-            price: parseFloat(opt.saleTotal.substring(priceMatch.index)),
-            currency: opt.saleTotal.substring(0, priceMatch.index),
-            duration: slice.duration,
-            carriers: carriers.map(code => carrierMap[code]),
-            events: events
-        };
-    });
-};
-
-// --
-// Main
-// --
-
-const qpx = require('./lib/qpx')('AIzaSyAaPygu-icX_Fr_qHueEF1d0oCWt_DGqkw');
-const departure = new Date(2017, 5, 28);
-
-const promise = Q.all([ 
-    qpx.search('BCN', 'AMS', departure).then(mapTrips),
-    //qpx.search('SPU', 'ATH', departure).then(mapTrips)
-]);
-
-promise.then(searches => Array.prototype.concat.apply([], searches))
-    .then(filter)
-    .then(options => {
-        options.sort((a,b) => a.price - b.price);
-
-        options.forEach(opt => {
-            console.log(optionToReadable(opt));
-        });
-    }, console.error);

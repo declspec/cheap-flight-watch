@@ -10,6 +10,7 @@
   "author": "Jason Larke",
   "license": "MIT",
   "dependencies": {
+    "minimist": "^1.2.0",
     "moment": "^2.17.1",
     "q": "^1.4.1",
     "sqlite3": "^3.1.8"
